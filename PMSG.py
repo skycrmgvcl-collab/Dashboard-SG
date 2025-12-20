@@ -41,12 +41,11 @@ if not file:
     st.stop()
 
 # =================================================
-# READ + PROCESS
+# READ & PROCESS DATA
 # =================================================
 with st.spinner("Processing Excel file..."):
     raw_df = pd.read_excel(file, header=None, engine="openpyxl")
 
-    # Map columns by index
     df = raw_df.rename(columns={
         0: "installation_date",
         1: "application_no",
@@ -58,7 +57,6 @@ with st.spinner("Processing Excel file..."):
         ["installation_date", "application_no", "consumer_no", "sub_division"]
     ].copy()
 
-    # Date parsing
     df["installation_date"] = pd.to_datetime(
         df["installation_date"],
         format="%d-%m-%Y",
@@ -67,11 +65,9 @@ with st.spinner("Processing Excel file..."):
 
     df = df.dropna(subset=["installation_date"])
 
-    # Days pending
     today = pd.to_datetime(date.today())
     df["days_pending"] = (today - df["installation_date"]).dt.days + 1
 
-    # Age bucket
     def ageing_bucket(days):
         if days <= 7:
             return "0 to 7 Days"
@@ -87,17 +83,7 @@ with st.spinner("Processing Excel file..."):
     df["age_bucket"] = df["days_pending"].apply(ageing_bucket)
 
 # =================================================
-# KPI CARDS
-# =================================================
-k1, k2, k3, k4 = st.columns(4)
-
-k1.metric("Total Applications", len(df))
-k2.metric("0–7 Days", (df["age_bucket"] == "0 to 7 Days").sum())
-k3.metric("16–30 Days", (df["age_bucket"] == "16 to 30 Days").sum())
-k4.metric(">45 Days", (df["age_bucket"] == "More than 45 Days").sum())
-
-# =================================================
-# SUMMARY TABLE
+# SIDEBAR FILTERS
 # =================================================
 bucket_order = [
     "0 to 7 Days",
@@ -107,8 +93,45 @@ bucket_order = [
     "More than 45 Days"
 ]
 
+st.sidebar.header("🔍 Filters")
+
+sel_sd = st.sidebar.selectbox(
+    "Sub Division",
+    ["ALL"] + sorted(df["sub_division"].unique())
+)
+
+sel_bucket = st.sidebar.selectbox(
+    "Age Bucket",
+    ["ALL"] + bucket_order
+)
+
+# =================================================
+# APPLY FILTERS (CORE FIX)
+# =================================================
+filtered_df = df.copy()
+
+if sel_sd != "ALL":
+    filtered_df = filtered_df[filtered_df["sub_division"] == sel_sd]
+
+if sel_bucket != "ALL":
+    filtered_df = filtered_df[filtered_df["age_bucket"] == sel_bucket]
+
+# =================================================
+# KPI CARDS (ALL BUCKETS SHOWN)
+# =================================================
+k1, k2, k3, k4, k5 = st.columns(5)
+
+k1.metric("Total", len(filtered_df))
+k2.metric("0–7 Days", (filtered_df["age_bucket"] == "0 to 7 Days").sum())
+k3.metric("8–15 Days", (filtered_df["age_bucket"] == "8 to 15 Days").sum())
+k4.metric("16–30 Days", (filtered_df["age_bucket"] == "16 to 30 Days").sum())
+k5.metric(">45 Days", (filtered_df["age_bucket"] == "More than 45 Days").sum())
+
+# =================================================
+# SUMMARY TABLE (FILTERED)
+# =================================================
 summary = (
-    df.pivot_table(
+    filtered_df.pivot_table(
         index="sub_division",
         columns="age_bucket",
         values="application_no",
@@ -133,33 +156,9 @@ final_summary = pd.concat([summary, grand_row], ignore_index=True)
 final_summary["Sr No."] = final_summary["Sr No."].astype("int64")
 
 # =================================================
-# SIDEBAR FILTERS
+# DETAIL TABLE (FILTERED)
 # =================================================
-st.sidebar.header("🔍 Filters")
-
-sel_sd = st.sidebar.selectbox(
-    "Sub Division",
-    ["ALL"] + sorted(df["sub_division"].unique())
-)
-
-sel_bucket = st.sidebar.selectbox(
-    "Age Bucket",
-    ["ALL"] + bucket_order,
-    index=bucket_order.index("More than 45 Days") + 1
-)
-
-# =================================================
-# DETAIL FILTERING
-# =================================================
-detail_df = df.copy()
-
-if sel_sd != "ALL":
-    detail_df = detail_df[detail_df["sub_division"] == sel_sd]
-
-if sel_bucket != "ALL":
-    detail_df = detail_df[detail_df["age_bucket"] == sel_bucket]
-
-detail_df = detail_df.sort_values("days_pending", ascending=False)
+detail_df = filtered_df.sort_values("days_pending", ascending=False)
 
 detail_view = detail_df[
     [
@@ -191,11 +190,9 @@ detail_view.rename(columns={
 tab1, tab2 = st.tabs(["📊 Summary", "📋 Detail"])
 
 with tab1:
-    st.subheader("Pending Ageing Summary (Sub Division wise)")
     st.dataframe(final_summary, use_container_width=True)
 
 with tab2:
-    st.subheader(f"Details – {sel_sd} | {sel_bucket}")
     st.dataframe(detail_view, use_container_width=True)
 
 # =================================================
@@ -239,6 +236,7 @@ st.markdown(
     """,
     unsafe_allow_html=True
 )
+
 
 
 
