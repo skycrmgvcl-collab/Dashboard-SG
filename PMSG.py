@@ -1,0 +1,224 @@
+import streamlit as st
+import pandas as pd
+import io
+from datetime import date
+
+st.set_page_config(
+    page_title="Pending for Release – PMSGMBY",
+    layout="wide"
+)
+
+# =================================================
+# STYLE
+# =================================================
+st.markdown("""
+<style>
+.stApp { background-color:#f4fbf6; }
+thead tr th {
+    background:#198754 !important;
+    color:white !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
+st.title("⏳ Pending for Release under PMSGMBY")
+
+# =================================================
+# FILE UPLOAD (NO HEADER EXCEL)
+# =================================================
+file = st.file_uploader(
+    "Upload Excel File (No Header)",
+    type=["xlsx"]
+)
+
+if not file:
+    st.info("Please upload Excel file")
+    st.stop()
+
+# =================================================
+# READ EXCEL (NO HEADER)
+# =================================================
+raw_df = pd.read_excel(file, header=None)
+
+# =================================================
+# MAP REQUIRED COLUMNS BY INDEX
+# =================================================
+df = raw_df.rename(columns={
+    0: "installation_date",   # Column 1
+    1: "application_no",      # Column 2
+    2: "consumer_no",         # Column 3
+    5: "sub_division"         # Column 6
+})
+
+df = df[
+    ["installation_date", "application_no", "consumer_no", "sub_division"]
+].copy()
+
+# =================================================
+# DATE PARSING
+# =================================================
+df["installation_date"] = pd.to_datetime(
+    df["installation_date"],
+    format="%d-%m-%Y",
+    errors="coerce"
+)
+
+df = df.dropna(subset=["installation_date"])
+
+# =================================================
+# DAYS PENDING CALCULATION
+# =================================================
+today = pd.to_datetime(date.today())
+df["days_pending"] = (today - df["installation_date"]).dt.days + 1
+
+# =================================================
+# AGE BUCKET
+# =================================================
+def ageing_bucket(days):
+    if days <= 7:
+        return "0 to 7 Days"
+    elif days <= 15:
+        return "8 to 15 Days"
+    elif days <= 30:
+        return "16 to 30 Days"
+    elif days <= 45:
+        return "31 to 45 Days"
+    else:
+        return "More than 45 Days"
+
+df["age_bucket"] = df["days_pending"].apply(ageing_bucket)
+
+# =================================================
+# SUMMARY TABLE (ARROW-SAFE)
+# =================================================
+bucket_order = [
+    "0 to 7 Days",
+    "8 to 15 Days",
+    "16 to 30 Days",
+    "31 to 45 Days",
+    "More than 45 Days"
+]
+
+summary = (
+    df.pivot_table(
+        index="sub_division",
+        columns="age_bucket",
+        values="application_no",
+        aggfunc="count",
+        fill_value=0
+    )
+    .reindex(columns=bucket_order, fill_value=0)
+)
+
+summary["TOTAL"] = summary.sum(axis=1)
+
+# Reset index correctly
+summary = summary.reset_index()
+summary.rename(columns={"sub_division": "Sub Division"}, inplace=True)
+
+# Add Sr No. (INT only)
+summary.insert(0, "Sr No.", range(1, len(summary) + 1))
+
+# Grand Total row (Sr No. = 0, not empty string)
+totals = summary[bucket_order + ["TOTAL"]].sum()
+grand_row = pd.DataFrame(
+    [[0, "Grand Total", *totals.tolist()]],
+    columns=summary.columns
+)
+
+final_summary = pd.concat([summary, grand_row], ignore_index=True)
+
+# Force Sr No. to integer (Arrow-safe)
+final_summary["Sr No."] = final_summary["Sr No."].astype("int64")
+
+# =================================================
+# DISPLAY SUMMARY
+# =================================================
+st.subheader("📊 Pending Ageing Summary (Sub Division wise)")
+st.dataframe(final_summary, width="stretch")
+
+# =================================================
+# DRILL-DOWN WITH ALL OPTION
+# =================================================
+st.subheader("🔎 Drill-Down Report")
+
+col1, col2 = st.columns(2)
+
+with col1:
+    sel_sd = st.selectbox(
+        "Select Sub Division",
+        ["ALL"] + sorted(df["sub_division"].unique())
+    )
+
+with col2:
+    sel_bucket = st.selectbox(
+        "Select Age Bucket",
+        ["ALL"] + bucket_order
+    )
+
+detail_df = df.copy()
+
+if sel_sd != "ALL":
+    detail_df = detail_df[detail_df["sub_division"] == sel_sd]
+
+if sel_bucket != "ALL":
+    detail_df = detail_df[detail_df["age_bucket"] == sel_bucket]
+
+detail_df = detail_df.sort_values("days_pending", ascending=False)
+
+# =================================================
+# DETAIL REPORT
+# =================================================
+detail_view = detail_df[
+    [
+        "installation_date",
+        "application_no",
+        "consumer_no",
+        "sub_division",
+        "days_pending"
+    ]
+].copy()
+
+detail_view["installation_date"] = detail_view["installation_date"].dt.strftime("%d-%m-%Y")
+
+detail_view.insert(0, "Sr No.", range(1, len(detail_view) + 1))
+
+detail_view.rename(columns={
+    "installation_date": "Installation Date",
+    "application_no": "Application Number",
+    "consumer_no": "Consumer Number",
+    "sub_division": "Sub Division",
+    "days_pending": "Pending (Days)"
+}, inplace=True)
+
+# Force Sr No. int
+detail_view["Sr No."] = detail_view["Sr No."].astype("int64")
+
+st.markdown(f"### 📋 Details – **{sel_sd}** | **{sel_bucket}**")
+st.dataframe(detail_view, width="stretch")
+
+# =================================================
+# DOWNLOADS
+# =================================================
+def to_excel(df, sheet):
+    buf = io.BytesIO()
+    with pd.ExcelWriter(buf, engine="openpyxl") as w:
+        df.to_excel(w, index=False, sheet_name=sheet)
+    buf.seek(0)
+    return buf
+
+st.download_button(
+    "⬇ Download Summary",
+    to_excel(final_summary, "Summary"),
+    "PMSGMBY_Pending_Summary.xlsx"
+)
+
+st.download_button(
+    "⬇ Download Detail Report",
+    to_excel(detail_view, "Detail"),
+    f"PMSGMBY_Pending_{sel_sd}_{sel_bucket}.xlsx"
+)
+
+
+
+
